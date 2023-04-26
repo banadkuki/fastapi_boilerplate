@@ -1,0 +1,48 @@
+version: "3.3"
+
+
+services:
+
+    WP_POSTGRES_DB:
+        container_name: postgres_db
+        image: postgres:12.0-alpine
+        restart: unless-stopped
+        ports:
+            - "5432:5432"
+        volumes:
+            - postgres-db-data:/var/lib/postgres
+        env_file:
+            - .env
+        extra_hosts:
+            - "host.localhost:host-gateway"
+
+    WP_REDIS:
+        container_name: redis
+        image: redis:6.0.6
+        restart: always
+        ports:
+            - "6379:6379"
+        env_file:
+            - .env
+        volumes:
+            - redis-app-data:/data
+        extra_hosts:
+            - "host.localhost:host-gateway"
+
+    WP_CELERY_FLOWER:
+        container_name: celery_app_flower
+        image: mher/flower:1.2
+        restart: always
+        ports:
+            - "5555:5555"
+        env_file:
+            - .env
+        volumes:
+            - flower-app-data:/data
+        extra_hosts:
+            - "host.localhost:host-gateway"
+
+volumes:
+    redis-app-data:
+    flower-app-data:
+    postgres-db-data:

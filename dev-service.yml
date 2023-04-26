@@ -1,0 +1,40 @@
+version: "3.3"
+
+
+services:
+
+    WP_APIS:
+        container_name: api_service
+        image: wallpay-services:1.1
+        build:
+            context: ./
+            dockerfile: api.dockerfile
+        ports:
+            - "8000:8000"
+        env_file:
+            - .env
+        volumes:
+            - ./app:/app
+        command: bash -c "/scripts/pre-start.sh && /scripts/start.sh"
+        restart: on-failure
+
+    WP_CELERY_WORKER:
+        container_name: celery_app_worker
+        image: wallpay-celery-worker:1.0
+        restart: always
+        build:
+            context: ./
+            dockerfile: celeryworker.dockerfile
+        env_file:
+            - .env
+
+    WP_CELERY_BEAT:
+        container_name: celery_app_beat
+        image: wallpay-celery-beat:1.0
+        restart: always
+        build:
+            context: ./
+            dockerfile: celerybeat.dockerfile
+        env_file:
+            - .env
+

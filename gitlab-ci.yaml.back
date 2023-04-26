@@ -1,0 +1,270 @@
+.releasePatternt: &releasePattern master
+.stagingPattern: &stagingPattern develop
+
+.productionOnly: &productionOnly
+  only:
+    - *releasePattern
+
+.stagingOnly: &stagingOnly
+  only:
+    - *stagingPattern
+
+.productionAndStagingOnly: &productionAndStagingOnly
+  only:
+    - *releasePattern
+    - *stagingPattern
+
+
+stages:
+  - build
+  - deploy
+
+variables:
+  VERSIONED_TAG: "$CI_COMMIT_REF_NAME.$CI_COMMIT_SHORT_SHA"
+  DOCKER_BUILDKIT: "1"
+  API_IMAGE: "$CI_REGISTRY_IMAGE/finance-api"
+  CELERYAPP_IMAGE: "$CI_REGISTRY_IMAGE/finance-celeryapp"
+
+default:
+  interruptible: true
+  retry: 2
+
+build:api:
+  stage: build
+  needs: [ ]
+  tags:
+    - international
+  <<: *productionAndStagingOnly
+  script:
+    - echo -n $CI_JOB_TOKEN | docker login -u gitlab-ci-token --password-stdin $CI_REGISTRY
+    - >
+      docker build
+      --pull
+      -f devops/containerfile/Containerfile
+      --build-arg BUILDKIT_INLINE_CACHE=1
+      ./services
+      -t $API_IMAGE:$VERSIONED_TAG
+    - docker push $API_IMAGE:$VERSIONED_TAG
+
+build:celeryapp:
+  stage: build
+  needs: [ ]
+  tags:
+    - international
+  <<: *productionAndStagingOnly
+  script:
+    - echo -n $CI_JOB_TOKEN | docker login -u gitlab-ci-token --password-stdin $CI_REGISTRY
+    - >
+      docker build
+      --pull
+      -f devops/containerfile/Celery-Containerfile
+      --build-arg BUILDKIT_INLINE_CACHE=1
+      ./services
+      -t $CELERYAPP_IMAGE:$VERSIONED_TAG
+    - docker push $CELERYAPP_IMAGE:$VERSIONED_TAG
+
+deploy:staging:finance:api:
+  stage: deploy
+  resource_group: staging/finance/
+  needs:
+    - build:api
+  tags:
+    - kubernetes-cluster
+    - asiatech
+  <<: *stagingOnly
+  environment:
+    name: Staging
+  retry: 2
+  image:
+    name: $INFRA_HELM_IMAGE
+    entrypoint: [ "" ]
+  script:
+    - helm repo add infra-charts $INFRA_CHARTMUSEUM_REPO_ADDRESS --username $INFRA_CHARTMUSEUM_USER --password $INFRA_CHARTMUSEUM_PASS > /dev/null
+    - helm repo update
+    - >
+      helm upgrade --install
+      --atomic
+      finance-api
+      --namespace finance-staging
+      --create-namespace
+      infra-charts/python
+      --wait
+      --timeout=30m0s
+      -f devops/kubernetes/staging-finance.yaml
+      --set image.repository=${API_IMAGE}
+      --set image.tag=${VERSIONED_TAG}
+      --set environment.REDIS_HOST=${REDIS_STAGING_HOST}
+      --set environment.POSTGRES_HOST=${ST_PSQL_HOST}
+      --set environment.POSTGRES_PORT=${ST_PSQL_PORT}
+      --set environment.POSTGRES_USER=${ST_PSQL_USER}
+      --set environment.POSTGRES_PASSWORD=${ST_PSQL_PASSWORD}
+      --set environment.POSTGRES_DB=${ST_PSQL_DB}
+      --set environment.MONGO_HOST=${MONGO_HOST}
+      --set environment.MONGO_PORT=${MONGO_PORT}
+      --set environment.MONGO_DBNAME=${MONGO_DBNAME}
+      --set environment.MONGO_INITDB_ROOT_USERNAME=${MONGO_USERNAME}
+      --set environment.MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD}
+      --set environment.CELERY_BROKER_URL=${CELERY_URL}
+      --set environment.CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND}
+      --set environment.FLOWER_PORT=${CELERY_FLOWER_PORT}
+
+deploy:staging:finance:celeryapp:
+  stage: deploy
+  resource_group: staging/finance/
+  needs:
+    - build:celeryapp
+  tags:
+    - kubernetes-cluster
+    - asiatech
+  <<: *stagingOnly
+  environment:
+    name: Staging
+  retry: 2
+  image:
+    name: $INFRA_HELM_IMAGE
+    entrypoint: [ "" ]
+  script:
+    - helm repo add infra-charts $INFRA_CHARTMUSEUM_REPO_ADDRESS --username $INFRA_CHARTMUSEUM_USER --password $INFRA_CHARTMUSEUM_PASS > /dev/null
+    - helm repo update
+    - >
+      helm upgrade --install
+      --atomic
+      finance-celeryapp
+      --namespace finance-staging
+      --create-namespace
+      infra-charts/python
+      --wait
+      --timeout=30m0s
+      -f devops/kubernetes/staging-celeryapp.yaml
+      --set image.repository=${CELERYAPP_IMAGE}
+      --set image.tag=${VERSIONED_TAG}
+      --set environment.REDIS_HOST=${REDIS_STAGING_HOST}
+      --set environment.CELERY_BROKER_URL=${CELERY_URL}
+      --set environment.CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND}
+
+deploy:staging:redis:
+  stage: deploy
+  resource_group: staging/finance/
+  tags:
+    - kubernetes-cluster
+    - asiatech
+  <<: *stagingOnly
+  environment:
+    name: Staging
+  retry: 2
+  image:
+    name: $INFRA_HELM_IMAGE
+    entrypoint: [ "" ]
+  script:
+    - helm repo add infra-charts $INFRA_CHARTMUSEUM_REPO_ADDRESS --username $INFRA_CHARTMUSEUM_USER --password $INFRA_CHARTMUSEUM_PASS > /dev/null
+    - helm repo update
+    - >
+      helm upgrade --install
+      --atomic
+      redis
+      --namespace finance-staging
+      --create-namespace
+      infra-charts/redis
+      --wait
+      --timeout=30m0s
+      -f devops/kubernetes/staging-redis.yaml
+
+deploy:staging:celeryflower:
+  stage: deploy
+  resource_group: staging/finance/
+  tags:
+    - kubernetes-cluster
+    - asiatech
+  <<: *stagingOnly
+  environment:
+    name: Staging
+  retry: 2
+  image:
+    name: $INFRA_HELM_IMAGE
+    entrypoint: [ "" ]
+  script:
+    - cd devops/kubernetes/celery-flower
+    - >
+      helm upgrade --install
+      --atomic
+      celeryflower
+      --namespace finance-staging
+      --create-namespace
+      --wait
+      --timeout=30m0s
+      -f staging-values.yaml
+      .
+
+#deploy:production:finance:api:
+#  stage: deploy
+#  resource_group: production/finance/
+#  needs:
+#    - build:api
+#  tags:
+#    - kubernetes-cluster
+#    - asiatech
+#  <<: *productionOnly
+#  environment:
+#    name: Production
+#  retry: 2
+#  image:
+#    name: $INFRA_HELM_IMAGE
+#    entrypoint: [ "" ]
+#  script:
+#    - helm repo add infra-charts $INFRA_CHARTMUSEUM_REPO_ADDRESS --username $INFRA_CHARTMUSEUM_USER --password $INFRA_CHARTMUSEUM_PASS > /dev/null
+#    - helm repo update
+#    - >
+#      helm upgrade --install
+#      --atomic
+#      finance-api
+#      --namespace finance-production
+#      --create-namespace
+#      infra-charts/python
+#      --wait
+#      --timeout=30m0s
+#      -f devops/kubernetes/production-finance.yaml
+#      --set image.repository=${API_IMAGE}
+#      --set image.tag=${VERSIONED_TAG}
+#      --set environment.REDIS_HOST=${REDIS_PRODUCTION_HOST}
+#      --set environment.MONGO_HOST=${MONGO_PRODUCTION_HOST}
+#      --set environment.MONGO_PORT=${MONGO_PRODUCTION_PORT}
+#      --set environment.POSTGRES_HOST=${PR_PSQL_HOST}
+#      --set environment.POSTGRES_PORT=${PR_PSQL_PORT}
+#      --set environment.POSTGRES_USER=${PR_PSQL_USER}
+#      --set environment.POSTGRES_PASSWORD=${PR_PSQL_PASSWORD}
+#      --set environment.POSTGRES_DB=${PR_PSQL_DB}
+#      --set environment.MONGO_DBNAME=${MONGO_PRODUCTION_DB_NAME}
+#      --set environment.MONGO_INITDB_ROOT_USERNAME=${MONGO_PRODUCTION_ROOT_USERNAME}
+#      --set environment.MONGO_INITDB_ROOT_PASSWORD=${MONGO_PRODUCTION_ROOT_PASSWORD}
+#      --set environment.CELERY_BROKER_URL=${CELERY_PRODUCTION_URL}
+#      --set environment.CELERY_RESULT_BACKEND=${CELERY_PRODUCTION_RESULT_BACKEND}
+#      --set environment.FLOWER_PORT=${CELERY_PRODUCTION_FLOWER_PORT}
+#
+#
+#deploy:production:redis:
+#  stage: deploy
+#  resource_group: production/finance/
+#  tags:
+#    - kubernetes-cluster
+#    - asiatech
+#  <<: *productionOnly
+#  environment:
+#    name: Production
+#  retry: 2
+#  image:
+#    name: $INFRA_HELM_IMAGE
+#    entrypoint: [ "" ]
+#  script:
+#    - helm repo add infra-charts $INFRA_CHARTMUSEUM_REPO_ADDRESS --username $INFRA_CHARTMUSEUM_USER --password $INFRA_CHARTMUSEUM_PASS > /dev/null
+#    - helm repo update
+#    - >
+#      helm upgrade --install
+#      --atomic
+#      redis
+#      --namespace finance-production
+#      --create-namespace
+#      infra-charts/redis
+#      --wait
+#      --timeout=30m0s
+#      -f devops/kubernetes/production-redis.yaml
+#
